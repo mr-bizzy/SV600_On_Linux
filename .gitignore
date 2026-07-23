@@ -1,0 +1,28 @@
+# --- Scan data, captures, personal documents — NEVER commit ---------------
+# These are large and/or contain real scanned documents. The repo is code only.
+*.bin
+*.pcapng
+*.png
+*.jpg
+*.jpeg
+*.tif
+*.tiff
+*.pdf
+!doc/**/*.png          # (allow illustrative screenshots under doc/, if added)
+
+# --- Downloaded model weights & caches ------------------------------------
+docker/models/
+__pycache__/
+*.pyc
+
+# --- Local / secret / workspace -------------------------------------------
+.gworkspace-mcp/
+*.local
+scratchpad/
+
+# --- Editor / OS ----------------------------------------------------------
+.DS_Store
+*.swp
+
+# --- Harness / session artifacts ---
+.claude/

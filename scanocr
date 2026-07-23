@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+#
+# scanocr — turn phone photos or a plain PDF into a small, SEARCHABLE PDF.
+#
+# Usage:
+#   scanocr document.pdf                 # OCR + compress an existing PDF
+#   scanocr page1.jpg page2.jpg ...      # bundle images -> OCR + compress
+#   scanocr -o out.pdf *.jpg             # choose the output name
+#
+# Output defaults to "<firstinput>-ocr.pdf" in the same folder.
+# Adds an invisible searchable text layer, auto-rotates, deskews, and
+# shrinks the file (ghostscript + jbig2/pngquant via ocrmypdf --optimize 3).
+#
+set -euo pipefail
+
+LANG_OCR="eng"          # OCR language(s), e.g. "eng" or "eng+fra"
+OPTIMIZE=3              # ocrmypdf optimization level (0-3; 3 = smallest)
+JPEG_Q=75              # recompress JPEGs to this quality when optimizing
+OUT=""
+
+usage() { grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+# --- parse args --------------------------------------------------------------
+INPUTS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o|--output) OUT="$2"; shift 2 ;;
+    -l|--lang)   LANG_OCR="$2"; shift 2 ;;
+    -h|--help)   usage 0 ;;
+    -*)          echo "Unknown option: $1" >&2; usage 1 ;;
+    *)           INPUTS+=("$1"); shift ;;
+  esac
+done
+[[ ${#INPUTS[@]} -gt 0 ]] || usage 1
+
+# --- deps check --------------------------------------------------------------
+for bin in ocrmypdf; do
+  command -v "$bin" >/dev/null || {
+    echo "Missing '$bin'. Install with:" >&2
+    echo "  sudo apt install ocrmypdf img2pdf jbig2enc pngquant unpaper" >&2
+    exit 1
+  }
+done
+
+first="${INPUTS[0]}"
+[[ -n "$OUT" ]] || OUT="${first%.*}-ocr.pdf"
+
+# --- build a source PDF ------------------------------------------------------
+tmp_pdf=""
+cleanup() { [[ -n "$tmp_pdf" && -f "$tmp_pdf" ]] && rm -f "$tmp_pdf"; }
+trap cleanup EXIT
+
+if [[ ${#INPUTS[@]} -eq 1 && "${first,,}" == *.pdf ]]; then
+  SRC="$first"
+else
+  command -v img2pdf >/dev/null || {
+    echo "Multiple images given but 'img2pdf' is missing. Install it:" >&2
+    echo "  sudo apt install img2pdf" >&2; exit 1; }
+  tmp_pdf="$(mktemp --suffix=.pdf)"
+  echo ">> Bundling ${#INPUTS[@]} image(s) into a PDF…"
+  img2pdf "${INPUTS[@]}" -o "$tmp_pdf"
+  SRC="$tmp_pdf"
+fi
+
+# --- OCR + compress ----------------------------------------------------------
+echo ">> OCR ($LANG_OCR) + deskew + compress -> $OUT"
+ocrmypdf \
+  --language "$LANG_OCR" \
+  --rotate-pages \
+  --deskew \
+  --clean \
+  --optimize "$OPTIMIZE" \
+  --jpeg-quality "$JPEG_Q" \
+  --skip-text \
+  "$SRC" "$OUT"
+
+# --- report ------------------------------------------------------------------
+in_sz=$(du -h "$SRC" | cut -f1)
+out_sz=$(du -h "$OUT" | cut -f1)
+echo ">> Done.  $SRC ($in_sz)  ->  $OUT ($out_sz)"
+echo ">> The output PDF now has a searchable/selectable text layer."

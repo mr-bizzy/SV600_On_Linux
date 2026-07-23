@@ -1,0 +1,40 @@
+[Unit]
+Description=ScanSnap SV600 scan-button watcher
+Documentation=file://@DIR@/sv600_watch.py
+# No After= on purpose. The SV600 is claimed by no kernel driver (it shows as
+# Driver=usbfs), so there is no dependable systemd device unit to order against,
+# and ordering after default.target — which also Wants this unit — would just
+# delay startup. If the scanner is absent or busy the service exits and
+# Restart=on-failure retries, which covers plugging it in later.
+
+[Service]
+Type=simple
+# Options live in the config file, not here, so changing them does not mean
+# editing a unit and reloading systemd.
+EnvironmentFile=%h/.config/sv600/watch.conf
+# Without this, Python block-buffers stdout when it is a pipe (which it is under
+# systemd), so journalctl shows a scan's whole output arriving in one clump
+# tens of seconds late — it made a working scan look like a stalled one.
+Environment=PYTHONUNBUFFERED=1
+# sh -c so SV600_ARGS is word-split. systemd does not split variables inside
+# ExecStart, so "$SV600_ARGS" would otherwise arrive as one giant argument.
+ExecStart=/bin/sh -c 'exec @PYTHON@ @DIR@/sv600_watch.py $SV600_ARGS'
+WorkingDirectory=@DIR@
+
+# The daemon owns the USB interface for as long as it runs. If it dies mid-scan
+# the scanner can be left mid-sequence, so give it a moment before reclaiming.
+Restart=on-failure
+RestartSec=5
+
+# It is a long-lived poller doing a 32-byte USB transfer 20x a second; it should
+# never be the reason something else is starved.
+Nice=5
+IOSchedulingClass=idle
+
+# The scan pipeline allocates several hundred MB (a raw frame is 74 MB and the
+# rectifier holds source + output). This is a backstop against a runaway, not a
+# tuning knob — raise it if a large --batch of big pages ever trips it.
+MemoryMax=4G
+
+[Install]
+WantedBy=default.target

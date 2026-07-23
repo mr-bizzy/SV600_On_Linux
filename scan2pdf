@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+#
+# scan2pdf — scan a page on the Fujitsu SV600 and produce a searchable,
+#            compressed PDF, entirely on Linux (no VM).
+#
+# Usage:  scan2pdf [-p N] [-j] [output.pdf]
+#   SCANOCR_LANG=eng+fra scan2pdf letter.pdf     # override OCR language
+#   scan2pdf -p 2 both.pdf                       # two sheets on the mat -> 2 pages
+#   scan2pdf -p 2 -j spread.pdf                  # two A4 sheets -> one A3 page
+#
+# Pipeline:  sv600_scan.py (native scan -> PNG)  ->  scanocr (OCR + shrink -> PDF)
+#
+set -euo pipefail
+
+PAGES=1
+JOIN=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -p|--pages) PAGES="$2"; shift 2 ;;
+    -j|--join)  JOIN="--join"; shift ;;
+    -h|--help)  grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*)         echo "Unknown option: $1" >&2; exit 1 ;;
+    *)          break ;;
+  esac
+done
+
+OUT="${1:-scan-$(date +%Y%m%d-%H%M%S).pdf}"
+LANG_OCR="${SCANOCR_LANG:-eng}"
+
+# --- locate the pieces (siblings of this script, wherever it lives) ----------
+HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+VENV_PY="$HOME/sv600-venv/bin/python"
+[[ -x "$VENV_PY" ]] || VENV_PY="$(command -v python3)"
+SV600_PY="$HERE/sv600_scan.py"
+SCANOCR="$HERE/scanocr"
+
+[[ -f "$SV600_PY" ]] || { echo "Missing $SV600_PY" >&2; exit 1; }
+[[ -x "$SCANOCR"  ]] || { echo "Missing $SCANOCR (chmod +x it)" >&2; exit 1; }
+
+# --- scratch PNG ------------------------------------------------------------
+# NOT in /tmp: fs.protected_regular blocks root (the scan runs via sudo) from
+# writing a file it doesn't own in the sticky /tmp dir. Put it next to the
+# output — a normal directory — where root can write freely.
+out_dir="$(cd "$(dirname -- "$OUT")" 2>/dev/null && pwd)" || out_dir="$PWD"
+tmp="$(mktemp "$out_dir/.sv600scan.XXXXXX.png")"
+# With --pages N (and no --join) the scanner writes <stem>-1.png … <stem>-N.png
+# rather than the name we passed, so clean up on that pattern too.
+stem="${tmp%.png}"
+cleanup() { rm -f "$tmp" "$stem"-[0-9]*.png; }
+trap cleanup EXIT
+
+echo ">> Scanning on the SV600 (sudo needed for USB access)…"
+sudo "$VENV_PY" "$SV600_PY" --pages "$PAGES" $JOIN "$tmp"
+sudo chown "$(id -un):$(id -gn)" "$tmp" "$stem"-[0-9]*.png 2>/dev/null || true
+
+# Collect whatever the scan actually produced, in page order.
+shopt -s nullglob
+PNGS=("$stem"-[0-9]*.png)
+shopt -u nullglob
+[[ ${#PNGS[@]} -gt 0 ]] || PNGS=("$tmp")
+for p in "${PNGS[@]}"; do
+  [[ -s "$p" ]] || { echo "Scan produced no image — aborting." >&2; exit 1; }
+done
+
+echo ">> OCR ($LANG_OCR) + compress -> $OUT  (${#PNGS[@]} page(s))"
+"$SCANOCR" -l "$LANG_OCR" -o "$OUT" "${PNGS[@]}"
+
+echo
+echo ">> Done: $OUT"
+echo "   (searchable text layer + compressed; scanned at 300 dpi on the SV600)"
